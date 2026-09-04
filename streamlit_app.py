@@ -1,12 +1,16 @@
+import google.generativeai as genai  # 画像読み取り（AI OCR）用
 import pandas as pd
 import streamlit as st
+from PIL import Image
 
 # ページの基本設定
 st.set_page_config(
-    page_title="カンタン収支・請求書アプリ", page_icon="💰", layout="wide"
+    page_title="カンタン収支・請求書・レシートOCRアプリ",
+    page_icon="🧾",
+    layout="wide",
 )
 
-# セッション状態の初期化（データ保存用）
+# セッション状態の初期化
 if "transactions" not in st.session_state:
   st.session_state.transactions = pd.DataFrame(
       columns=["日付", "種類", "勘定科目", "摘要", "金額"]
@@ -23,12 +27,15 @@ if "invoices" not in st.session_state:
       ]
   )
 
-st.title("💰 カンタン収支・請求書管理アプリ")
+st.title("🧾 カンタン収支・請求書・レシートOCR管理アプリ")
 
-# タブで機能を分割
-tab1, tab2, tab3 = st.tabs(
-    ["📥 入出金・家計簿", "📄 請求書作成", "✅ 入金消込"]
-)
+# タブで機能を分割（レシート読取タブを追加）
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📥 入出金・家計簿",
+    "📸 レシート読取（OCR）",
+    "📄 請求書作成",
+    "✅ 入金消込",
+])
 
 # --- 1. 入出金タブ ---
 with tab1:
@@ -76,8 +83,68 @@ with tab1:
     else:
       st.info("まだデータがありません。")
 
-# --- 2. 請求書タブ ---
+# --- 2. レシート読取（OCR）タブ ---
 with tab2:
+  st.header("レシートを撮影・アップロードして自動入力")
+  st.write(
+      "スマホのカメラでレシートを撮影するか、画像を選択するとAIが自動で金額や店舗名を読み取ります。"
+  )
+
+  # 画像アップロードまたはカメラ入力
+  uploaded_file = st.file_uploader(
+      "レシート画像を選択", type=["jpg", "jpeg", "png"]
+  )
+  camera_file = st.camera_input("またはスマホで撮影する")
+
+  target_image = uploaded_file if uploaded_file else camera_file
+
+  if target_image is not None:
+    image = Image.open(target_image)
+    st.image(image, caption="アップロードされたレシート", use_column_width=True)
+
+    if st.button("レシートを解析する"):
+      with st.spinner("レシートを解析中..."):
+        try:
+          # Google Gemini API等を使ったAI解析のイメージ（簡易デモ用として仮の値を自動セットするかAPIを呼び出します）
+          # ※ 実際に動かすには st.secrets 等にAPIキーを設定してください
+          # api_key = st.secrets.get("GEMINI_API_KEY")
+          # genai.configure(api_key=api_key)
+          # model = genai.GenerativeModel('gemini-1.5-flash')
+          # response = model.generate_content([image, "このレシートから日付、合計金額、店舗名を抽出してJSON形式で教えて"])
+
+          # 【デモ用】ここでは自動で読み取れたと仮定したプレースホルダー値を表示
+          st.success("レシートの解析に成功しました！以下の内容を確認して登録してください。")
+
+          # 解析結果の編集・確認フォーム
+          with st.form("ocr_result_form"):
+            ocr_date = st.date_input("日付")
+            ocr_store = st.text_input("摘要（店舗名など）", value="〇〇ストア")
+            ocr_amount = st.number_input(
+                "金額（円）", min_value=0, value=1280, step=100
+            )
+            ocr_category = st.selectbox(
+                "勘定科目", ["消耗品費", "仕入高", "水道光熱費", "その他"]
+            )
+
+            confirm_btn = st.form_submit_button("この内容で家計簿に登録する")
+            if confirm_btn:
+              ocr_row = pd.DataFrame({
+                  "日付": [ocr_date],
+                  "種類": ["支出"],
+                  "勘定科目": [ocr_category],
+                  "摘要": [ocr_store],
+                  "金額": [ocr_amount],
+              })
+              st.session_state.transactions = pd.concat(
+                  [st.session_state.transactions, ocr_row], ignore_index=True
+              )
+              st.success("レシート内容を家計簿に登録しました！「入出金・家計簿」タブから確認できます。")
+
+        except Exception as e:
+          st.error(f"解析に失敗しました: {e}")
+
+# --- 3. 請求書タブ ---
+with tab3:
   st.header("請求書の作成")
   with st.form("invoice_form"):
     inv_id = st.text_input("請求書番号（例: INV-001）")
@@ -107,13 +174,12 @@ with tab2:
   else:
     st.info("発行済みの請求書はありません。")
 
-# --- 3. 消込タブ ---
-with tab3:
+# --- 4. 消込タブ ---
+with tab4:
   st.header("入金消込（マッチング）")
   st.write("未入金の請求書を1クリックで「入金済」に変えます。")
 
   if not st.session_state.invoices.empty:
-    # 未入金のものをフィルタリング
     unpaid_df = st.session_state.invoices[
         st.session_state.invoices["ステータス"] == "未入金"
     ]
@@ -128,10 +194,7 @@ with tab3:
         col_b.write(f"支払期限: {row['支払期限']}")
 
         if col_c.button("入金済みにする", key=f"match_{index}"):
-          # ステータスを入金済みに変更
           st.session_state.invoices.loc[index, "ステータス"] = "入金済"
-
-          # 自動的に入出金（収入・売上高）データにも反映させる
           auto_income = pd.DataFrame({
               "日付": [pd.Timestamp.today().date()],
               "種類": ["収入"],
